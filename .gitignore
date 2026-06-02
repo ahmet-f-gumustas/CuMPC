@@ -6,6 +6,13 @@
 *.lo
 *.o
 *.obj
+*.ko
+*.elf
+
+# Preprocessed / intermediate C/C++ files
+*.i
+*.ii
+*.s
 
 # Precompiled Headers
 *.gch
@@ -67,3 +74,62 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# ----- CUDA -----
+# Compiled device code / intermediates
+*.cubin
+*.fatbin
+*.ptx
+*.gpu
+*.cudafe1.c
+*.cudafe1.cpp
+*.cudafe1.gpu
+*.cudafe1.stub.c
+*.cudafe2.c
+*.cudafe2.gpu
+*.cudafe2.stub.c
+*.cudafe.h
+*.module_id
+*.reg.c
+*.hash
+*.fatbin.c
+*.cu.o
+
+# CUDA profiler / Nsight outputs
+*.nvprof
+*.nvvp
+*.nsight
+*.nsys-rep
+*.qdrep
+*.qdstrm
+*.ncu-rep
+*.ncu-proj
+prof/
+*.sqlite
+
+# ----- ROS 2 / colcon -----
+install/
+log/
+devel/
+logs/
+.colcon/
+*.bag
+*.db3
+*.mcap
+
+# ----- Python (rclpy nodes, launch helpers) -----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# ----- Editors / IDE -----
+.vscode/
+.idea/
+*.code-workspace
+.clangd/
+.ccls-cache/
+
+# ----- OS -----
+.DS_Store
+Thumbs.db
