@@ -1,39 +1,36 @@
 # CuMPC
 
-**CuMPC** is a CUDA-accelerated **Model Predictive Control (MPC)** implementation for **ROS 2**.
+**CuMPC**, **ROS 2** için CUDA hızlandırmalı bir **Model Öngörülü Kontrol (MPC)** uygulamasıdır.
 
-The goal of the project is to move the heavy numerical work of MPC — building the
-prediction horizon, evaluating the cost function, and solving the underlying
-optimization problem — onto the GPU, so the controller can run at high rates on
-systems with many states, long horizons, or tight real-time deadlines where a
-CPU-only solver would struggle.
+Amaç, MPC'nin ağır sayısal işlerini — tahmin ufkunun kurulması, maliyet fonksiyonunun
+değerlendirilmesi ve optimizasyon probleminin çözülmesi — GPU'ya taşıyarak, kontrolcünün
+çok durumlu, uzun ufuklu veya sıkı gerçek zamanlı sistemlerde yüksek hızda çalışmasını sağlamaktır.
 
-## Overview
+## Nasıl Çalışır
 
-A standard MPC loop solves a constrained optimization problem at every control
-step: predict the system's behaviour over a finite horizon, minimize a cost
-function, and apply the first control input. The compute cost grows quickly with
-the horizon length and state dimension. CuMPC offloads the parallelizable parts
-of this loop to CUDA kernels and exposes the controller as a ROS 2 node, so it
-plugs into an existing robotics stack.
+MPC her kontrol adımında bir optimizasyon problemi çözer: sistemin davranışını belirli bir
+ufuk boyunca tahmin eder, bir maliyet fonksiyonunu en aza indirir ve ilk kontrol girdisini uygular.
+Bu döngünün hesaplama maliyeti ufuk uzunluğu ve durum sayısıyla hızla artar. CuMPC, döngünün
+paralelleştirilebilir kısımlarını CUDA çekirdeklerine taşır ve kontrolcüyü bir ROS 2 düğümü
+olarak sunar.
 
-## Features
+## Özellikler
 
-- CUDA kernels for the parallelizable parts of the MPC loop (prediction, cost evaluation, solver iterations)
-- ROS 2 node wrapping the controller (subscribes to state, publishes control commands)
-- Configurable horizon, model, cost weights, and constraints
+- MPC döngüsünün paralelleştirilebilir kısımları için CUDA çekirdekleri (tahmin, maliyet hesabı, çözücü iterasyonları)
+- Kontrolcüyü saran ROS 2 düğümü (durumu dinler, kontrol komutları yayınlar)
+- Yapılandırılabilir ufuk, model, maliyet ağırlıkları ve kısıtlar
 
-## Requirements
+## Gereksinimler
 
-- CUDA Toolkit (with a CUDA-capable GPU)
+- CUDA Toolkit (CUDA destekli bir GPU ile)
 - ROS 2
-- C++17 (or newer) compiler
+- C++17 (veya üzeri) derleyici
 - CMake
 
-## Status
+## Durum
 
-Work in progress. APIs, node names, and parameters are still evolving.
+Geliştirme aşamasında. API'ler, düğüm adları ve parametreler hâlâ değişebilir.
 
-## License
+## Lisans
 
-Licensed under the GNU General Public License v3.0. See [LICENSE](LICENSE) for details.
+GNU General Public License v3.0 ile lisanslanmıştır. Ayrıntılar için [LICENSE](LICENSE) dosyasına bakın.
