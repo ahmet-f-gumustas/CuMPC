@@ -133,3 +133,7 @@ __pycache__/
 # ----- OS -----
 .DS_Store
 Thumbs.db
+
+# ----- venv + kosu ciktilari -----
+.venv/
+runs/
