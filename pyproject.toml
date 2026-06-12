@@ -1,0 +1,19 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "pybind11>=2.12"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "cumpc"
+version = "0.1.0"
+description = "cuMPC-Mujoco: custom CUDA MPPI core developed and tested in MuJoCo"
+requires-python = ">=3.10"
+dependencies = ["numpy"]
+
+[tool.scikit-build]
+cmake.version = ">=3.24"
+build-dir = "build/{wheel_tag}"
+wheel.packages = []
+
+[tool.scikit-build.cmake.define]
+CMAKE_BUILD_TYPE = "Release"
+CMAKE_CUDA_ARCHITECTURES = "89"
