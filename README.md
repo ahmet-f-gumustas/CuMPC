@@ -1,71 +1,146 @@
-# CuMPC — cuMPC-Mujoco
+# CuMPC
 
-**CuMPC**, differential-drive bir tarım robotunu cm hassasiyetinde referans takip ettiren;
-obstacle- ve terrain-aware; GPU-accelerated bir **MPPI (Model Predictive Path Integral)**
-kontrolcüsüdür. Bu repo, **gerçek custom CUDA çekirdeğinin** (cuRAND sampling +
-thread-per-rollout + reduction) **MuJoCo** simülasyon kabuğu içinde geliştirilmesidir —
-çekirdek production cuMPC'ye (ROS 2 / gerçek robot) **olduğu gibi** taşınır.
+**CuMPC** is a GPU-accelerated **MPPI (Model Predictive Path Integral)** controller
+core for differential-drive mobile robots. It tracks a reference path with
+centimeter-level accuracy while staying obstacle- and terrain-aware, and it is
+written in **pure custom CUDA** — no PyTorch, no inference frameworks.
 
-Proje spec'i: [cuMPC-Mujoco.md](cuMPC-Mujoco.md) · Sonuçlar: [docs/RESULTS.md](docs/RESULTS.md)
-· Phase 0 raporu: [docs/PHASE0_REPORT.md](docs/PHASE0_REPORT.md)
+## Features
 
-## Mimari
+- **Custom CUDA pipeline** — cuRAND control sampling, one-thread-per-rollout
+  cost evaluation, deterministic reductions, warm-started nominal plan
+- **Exact-arc differential-drive dynamics** with slip awareness
+  (`kappa_v`, `kappa_w`, lateral drift `v_y`)
+- **Obstacle costs** from a signed-distance field (ESDF) queried on device with
+  bilinear interpolation (hard barrier + soft margin)
+- **Terrain costs** from an elevation feature map (slope, roughness,
+  traversability) with a rollover guard
+- **Deterministic by design** — no `atomicAdd` in reductions; a fixed seed
+  reproduces results bit-exactly
+- **RAII device memory** and error-checked CUDA calls throughout; clean under
+  `compute-sanitizer` (memcheck, racecheck, initcheck, synccheck)
+- **pybind11 bridge** — NumPy in, NumPy out
 
-- **CUDA çekirdek** (`core/`, `dynamics/`, `perception/*.cuh`): sampling → rollout
-  (exact-arc diff-drive + slip + cost) → min/weights/weighted-update reduction →
-  warm-start. RAII device buffer'lar, deterministik reduction, `compute-sanitizer` temiz.
-- **pybind11 köprüsü** (`bindings/`): `MPPIController.step(state, ref_window) → [v, omega]`,
-  `set_esdf` / `set_elevation` upload'ları. PyTorch yok.
-- **MuJoCo harness** (`mujoco_harness/`): yalnız dış kabuk — sensör okuma (framepos/quat,
-  IMU, encoder, rangefinder fan), referans pencere hazırlama, aktüatör dönüşümü, loglama.
-  Hiçbir kontrol matematiği Python'da değildir.
+## How a step works
 
-## Sonuç özeti (RTX 4070, K=2048, H=40)
-
-| Metrik | Hedef | Ölçülen |
-|---|---|---|
-| Cross-track RMS (düz / eğri) | < 0.03 m | 0.008 / 0.028 m |
-| Cross-track RMS (S-curve) | < 0.05 m | 0.042 m |
-| Collision (engelli kurs) | 0 | 0 |
-| MPPI loop-rate | ≥ 20 Hz | ~4500-6000 Hz (step ≈ 165 µs) |
-| Slip-aware vs naive (yamaç) | daha düşük RMS | 0.096 vs 0.128 m (−%25) |
-| compute-sanitizer (4 araç) | temiz | 0 hata / 0 hazard |
-
-## Kurulum
-
-```bash
-uv venv --python 3.10 && source .venv/bin/activate
-uv pip install mujoco numpy pyyaml matplotlib pybind11 scikit-build-core "cmake>=3.24" ninja pytest
-uv pip install -e .        # CUDA core + pybind11 modülü (CMake, sm_89)
+```
+SAMPLE   U[k] = U_nom + eps,  eps ~ N(0, diag(sigma_v, sigma_omega)), hard clamp
+ROLLOUT  one thread per sample k: H exact-arc dynamics steps + running cost
+         (cross-track, heading, progress, smoothness, acceleration,
+          ESDF obstacle, terrain, arc-length terminal)
+REDUCE   rho = min S  →  w = exp(-(S - rho)/lambda)  →  weighted average → U_nom
+OUTPUT   control = U_nom[0]; warm-start shift
 ```
 
-## Çalıştırma
+All control math runs on the GPU. The host only uploads the reference window
+and downloads the resulting `[v, omega]`.
+
+## Performance
+
+| Setup | Step latency |
+|---|---|
+| K=2048 samples, H=40 horizon, RTX 4070 Laptop GPU | **≈ 150 µs** (~6 kHz) |
+
+That is 81,920 dynamics + cost evaluations per control step, leaving more than
+two orders of magnitude of headroom over a typical 20 Hz control loop.
+
+## Requirements
+
+- NVIDIA GPU and CUDA Toolkit ≥ 12.x (`nvcc` on PATH)
+- Python ≥ 3.10
+- CMake ≥ 3.24 and a C++20 compiler (fetched automatically when installing via pip)
+
+The default build targets `sm_89` (RTX 40xx). For other GPUs:
 
 ```bash
-MUJOCO_GL=egl python examples/drive_manual.py        # M0: manuel sürüş
-MUJOCO_GL=egl python examples/track_straight.py      # M1 (+ track_curve / track_scurve)
-MUJOCO_GL=egl python examples/full_course.py --no-terrain   # M2: engel
-MUJOCO_GL=egl python examples/full_course.py                # M3: engel + terrain
-MUJOCO_GL=egl python examples/slope_traverse.py      # M3: slip-aware vs naive
-python metrics/evaluate.py --all                     # metrikler
-python metrics/plot_results.py --all                 # docs/plots/*.png
+CMAKE_ARGS="-DCMAKE_CUDA_ARCHITECTURES=86" pip install ...   # e.g. RTX 30xx
 ```
 
-GUI için `--viewer` bayrağını ekleyin (`MUJOCO_GL` gerekmez).
-
-## Test / doğruluk
+## Installation
 
 ```bash
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest test/ -q          # 22 test
-MUJOCO_GL=egl compute-sanitizer --tool memcheck python examples/track_scurve.py
+pip install "cumpc @ git+https://github.com/ahmet-f-gumustas/CuMPC.git"
 ```
 
-## Kapsam
+or for development:
 
-Bu repo spec gereği ROS 2, gerçek donanım, GP/ensemble, CVaR ve evidential DL içermez —
-bunlar production cuMPC kabuğunun konusudur. Burada üretilen kernel'ler, query'ler ve
-naming production ile birebir aynıdır.
+```bash
+git clone https://github.com/ahmet-f-gumustas/CuMPC.git
+cd CuMPC
+pip install -e .
+```
 
-## Lisans
+## Quick start
 
-GNU General Public License v3.0 — bkz. [LICENSE](LICENSE).
+```python
+import numpy as np
+import cumpc_core as cc
+
+cfg = cc.MPPIConfig()                          # K=2048, H=40, dt=0.05
+cfg.lambda_, cfg.sigma_v, cfg.sigma_omega = 50.0, 0.15, 0.25
+
+r = cfg.robot
+r.wheel_radius, r.track_width = 0.10, 0.40
+r.v_max, r.omega_max, r.a_max, r.alpha_max = 2.0, 2.0, 2.0, 3.0
+r.robot_radius = 0.32
+
+cfg.slip.kappa_v = cfg.slip.kappa_w = 1.0      # identity = no slip compensation
+
+w = cfg.weights
+w.w_lat, w.w_head, w.w_prog, w.w_du, w.w_term = 50.0, 10.0, 50.0, 0.1, 1000.0
+w.w_coll_hard, w.w_coll_soft = 1e6, 200.0
+w.w_slope, w.w_rough, w.w_trav, w.w_rollover = 20.0, 10.0, 30.0, 1e5
+
+c = cfg.cost
+c.k_accel, c.safe_hard, c.safe_soft = 0.1, 0.10, 0.30
+c.rollover_slope, c.term_slack = 0.45, 2.2
+
+ctrl = cc.MPPIController(cfg)
+
+# optional: obstacle / terrain maps (host-built once, uploaded to the GPU)
+# ctrl.set_esdf(sdf_grid, origin_x, origin_y, res)            # (ny, nx)
+# ctrl.set_elevation(feature_grid, origin_x, origin_y, res)   # (ny, nx, 3)
+
+state = np.zeros(3, dtype=np.float32)          # [px, py, theta]
+xs = np.arange(64, dtype=np.float32) * 0.05    # reference window: straight ahead
+ref = np.stack([xs, np.zeros_like(xs), np.zeros_like(xs)], axis=1)  # (N,3) x,y,heading
+
+v, omega = ctrl.step(state, ref)
+```
+
+Utility functions: `build_esdf` (circles/boxes → SDF grid),
+`build_elevation_features` (heights → slope/roughness/traversability),
+`simulate_controls` (run the production dynamics on device),
+`query_esdf` / `query_terrain` (debug map queries), `last_rollouts`,
+`nominal`, `set_slip`, `reset`.
+
+## Development Roadmap
+
+**v0.1 — Core controller** *(current)*
+- [x] MPPI step pipeline in pure CUDA (sample → rollout → reduce → warm start)
+- [x] Exact-arc differential-drive dynamics with slip parameters
+- [x] ESDF obstacle costs and terrain costs with rollover guard
+- [x] Deterministic reductions, RAII device memory, sanitizer-clean
+- [x] pybind11 / NumPy API
+
+**v0.2 — Hardening**
+- [ ] Publish the unit test suite (dynamics vs. analytic references, sampling
+      statistics and determinism, bilinear map queries, controller smoke tests)
+- [ ] Build CI (compile + host-side checks)
+- [ ] Configurable CUDA architecture in packaging (default `native`)
+- [ ] Runtime-tunable weights and temperature without rebuilding the controller
+
+**v0.3 — Performance**
+- [ ] Reference window in shared memory + local nearest-point search
+- [ ] CUDA Graphs for the step pipeline (cut kernel launch overhead)
+- [ ] Async map uploads on a dedicated stream
+- [ ] Benchmarks at larger sample counts (K = 8k–16k)
+
+**v1.0 — Deployment**
+- [ ] ROS 2 integration shell (separate repository)
+- [ ] State-dependent slip estimation driven by terrain queries
+- [ ] Prebuilt wheels for common GPU architectures
+
+## License
+
+GNU General Public License v3.0 — see [LICENSE](LICENSE).
