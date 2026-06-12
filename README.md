@@ -143,4 +143,4 @@ Utility functions: `build_esdf` (circles/boxes → SDF grid),
 
 ## License
 
-GNU General Public License v3.0 — see [LICENSE](LICENSE).
+Apache License 2.0 — see [LICENSE](LICENSE).
