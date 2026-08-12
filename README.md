@@ -44,6 +44,35 @@ and downloads the resulting `[v, omega]`.
 That is 81,920 dynamics + cost evaluations per control step, leaving more than
 two orders of magnitude of headroom over a typical 20 Hz control loop.
 
+## Non-blocking use
+
+`step()` submits the pipeline, waits for it and returns the control — convenient, and the reason it
+was written that way. It is also, measured on an RTX 4070 Laptop at K=2048/H=40, **77 % wait**: the
+8-byte device-to-host copy of the result is where the host stops and waits for every kernel queued
+before it.
+
+A caller that has something else to do meanwhile can split the two:
+
+```cpp
+MPPI planner(cfg);
+planner.enqueue(state, reference, n);   // submits and returns   —  16.5 µs
+// ... do other work here ...
+while (!planner.poll()) { /* not ready yet; poll() never blocks */ }
+const float2 control = planner.result();
+```
+
+Measured on the same machine and configuration: **submission 16.5 µs, wait 130.8 µs**. The GPU work
+is unchanged — what the split recovers is the host's time, not the device's.
+
+Everything runs on the controller's **own non-blocking stream** (`planner.stream()`), so it neither
+serialises against nor is serialised by the legacy default stream. Nothing on the hot path allocates:
+buffers keep their capacity across calls, and a cost map that is already on the device can be adopted
+without a copy:
+
+```cpp
+planner.set_cost_grid_device(device_ptr, meta);   // no H2D, caller keeps ownership
+```
+
 ## Requirements
 
 - NVIDIA GPU and CUDA Toolkit ≥ 12.x (`nvcc` on PATH)
@@ -133,7 +162,8 @@ Utility functions: `build_esdf` (circles/boxes → SDF grid),
 **v0.3 — Performance**
 - [ ] Reference window in shared memory + local nearest-point search
 - [ ] CUDA Graphs for the step pipeline (cut kernel launch overhead)
-- [ ] Async map uploads on a dedicated stream
+- [x] Async map uploads on a dedicated stream — with the buffer lifetime that makes them safe, an
+      `enqueue`/`poll` split and a pinned result buffer
 - [ ] Benchmarks at larger sample counts (K = 8k–16k)
 
 **v1.0 — Deployment**

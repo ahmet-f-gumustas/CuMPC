@@ -101,22 +101,22 @@ __global__ void weighted_update_kernel(const float* __restrict__ U,
     if (threadIdx.x == 0) U_nom[i] = sh[0] / *eta;
 }
 
-void reduce_min(const float* S, float* rho, int K)
+void reduce_min(const float* S, float* rho, int K, cudaStream_t stream)
 {
-    set_inf_kernel<<<1, 1>>>(rho);
-    reduce_min_kernel<<<reduction_num_blocks(K), kBlock>>>(S, rho, K);
+    set_inf_kernel<<<1, 1, 0, stream>>>(rho);
+    reduce_min_kernel<<<reduction_num_blocks(K), kBlock, 0, stream>>>(S, rho, K);
 }
 
 void compute_weights(const float* S, const float* rho, float lambda,
-                     float* wgt, float* eta_partial, float* eta, int K)
+                     float* wgt, float* eta_partial, float* eta, int K, cudaStream_t stream)
 {
     const int nb = reduction_num_blocks(K);
-    weights_kernel<<<nb, kBlock>>>(S, rho, lambda, wgt, eta_partial, K);
-    finalize_eta_kernel<<<1, kBlock>>>(eta_partial, eta, nb);
+    weights_kernel<<<nb, kBlock, 0, stream>>>(S, rho, lambda, wgt, eta_partial, K);
+    finalize_eta_kernel<<<1, kBlock, 0, stream>>>(eta_partial, eta, nb);
 }
 
 void weighted_update(const float* U, const float* wgt, const float* eta,
-                     float* U_nom, int K, int H)
+                     float* U_nom, int K, int H, cudaStream_t stream)
 {
-    weighted_update_kernel<<<H * 2, kBlock>>>(U, wgt, eta, U_nom, K, H);
+    weighted_update_kernel<<<H * 2, kBlock, 0, stream>>>(U, wgt, eta, U_nom, K, H);
 }
