@@ -146,10 +146,10 @@ __global__ void rollout_cost_kernel(
 void rollout_cost(const float* U, float3 x0, float2 u_prev, float* S, float* traj,
                   RobotParams rp, SlipParams slip, CostWeights w, CostParams cp,
                   RefWindow ref, MapView esdf, MapView elev,
-                  float dt, int K, int H)
+                  float dt, int K, int H, cudaStream_t stream)
 {
     const int grid = (K + kBlock - 1) / kBlock;
-    rollout_cost_kernel<<<grid, kBlock>>>(U, x0, u_prev, S, traj,
+    rollout_cost_kernel<<<grid, kBlock, 0, stream>>>(U, x0, u_prev, S, traj,
                                           rp, slip, w, cp, ref, esdf, elev,
                                           dt, K, H);
 }

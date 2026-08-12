@@ -22,11 +22,39 @@ struct MPPIConfig {
 class MPPI {
 public:
     explicit MPPI(const MPPIConfig& cfg);
+    ~MPPI();
+
+    MPPI(const MPPI&) = delete;
+    MPPI& operator=(const MPPI&) = delete;
 
     // x0=[px,py,theta]; ref_host=[N*3] (x,y,heading); → [v,omega]
+    //
+    // BLOKLAYAN, geriye dönük uyum için: enqueue() + tamamlanmayı bekle + result(). Mevcut
+    // tüketiciler (pybind modülü, cumpc-mujoco harness'ı) bu imzayı kullanmaya devam eder.
     float2 step(float3 x0, const float* ref_host, int N);
 
+    // ---- BLOKLAMAYAN yol (BudgetRT runtime sözleşmesi) --------------------------------
+    //
+    // Ölçüm (BudgetRT `tests/perf/stage_d_task5_planner_costs/`): step()'in %77'si, 8 baytlık
+    // control çıktısının senkron D2H'sinde geçiyor - kopya yavaş olduğu için değil, host'un orada
+    // durup kendisinden önce kuyruğa girmiş her kernel'i beklediği için. enqueue/poll ayrımı GPU'yu
+    // hızlandırmaz; o süreyi host'a geri verir.
+    //
+    // enqueue(): işi stream'e koyar, tamamlanma event'ini kaydeder ve DÖNER. Beklemez.
+    void enqueue(float3 x0, const float* ref_host, int N);
+    // poll(): tamamlanma event'ini SORGULAR (cudaEventQuery), beklemez. true = sonuç hazır.
+    bool poll() const;
+    // wait(): tamamlanmayı bekler. Kritik yolda çağrılmaz; step()'in ve testlerin kullandığı yol.
+    void wait() const;
+    // result(): son tamamlanan enqueue'nun kontrolü. poll() true dönmeden okunması tanımsızdır.
+    float2 result() const;
+
     void set_esdf(const float* host, MapMeta meta);
+    // K9(b): maliyet gridi ZATEN CİHAZDA olduğunda kopyalamadan benimser. BudgetRT'nin overlay'i
+    // çıktısını cihazda üretir; onu host'a indirip geri yüklemek ölçülen ~208 µs/tick'lik senkron
+    // H2D'nin tamamıdır. `device` işaretçisinin sahibi ÇAĞIRANDIR ve en az bir sonraki enqueue()
+    // tamamlanana kadar geçerli kalmalıdır.
+    void set_cost_grid_device(const float* device, MapMeta meta);
     void set_elevation(const float* host, MapMeta meta);
     void set_slip(const SlipParams& slip) { cfg_.slip = slip; }
     void reset();  // warm-start + rng + u_prev sıfırla (tam determinizm)
@@ -37,8 +65,23 @@ public:
     MapView esdf_view() const;
     MapView elev_view() const;
 
+    // Hangi stream'de çalıştığı, çağıranın kendi bağımlılıklarını kurabilmesi için görünür
+    // (cudaStreamWaitEvent). Sahibi bu sınıftır ve ömrü nesnenin ömrüdür.
+    cudaStream_t stream() const { return stream_; }
+
 private:
+    void submit_(float3 x0, const float* ref_host, int N);
+
     MPPIConfig cfg_;
+
+    // NON-BLOCKING olarak yaratılır: legacy default stream ile ÖRTÜK senkronizasyon kurmaz. Bu,
+    // çağıran runtime'ın kanal ayrımının (BudgetRT §6.3 k4) planner tarafından bozulmamasının tek
+    // yoludur.
+    cudaStream_t stream_ = nullptr;
+    // Tamamlanma event'i (timing kapalı: sorgulanır, ölçülmez).
+    cudaEvent_t done_ = nullptr;
+    // PINNED host çıktısı [2]. Pageable olsaydı D2H yine senkronlaşırdı ve ayrımın anlamı kalmazdı.
+    float* out_pinned_ = nullptr;
 
     DeviceBuffer<float> U_;            // [K*H*2] örneklenen kontroller
     DeviceBuffer<float> U_nom_;        // [H*2] nominal (warm-start)
@@ -56,6 +99,8 @@ private:
 
     DeviceBuffer<float> esdf_data_;    // [ny*nx]
     DeviceBuffer<float> elev_data_;    // [ny*nx*3]
+    // K9(b): çağıranın sahibi olduğu cihaz işaretçisi. nullptr ise kendi tamponu kullanılır.
+    const float* esdf_external_ = nullptr;
     MapMeta esdf_meta_{};
     MapMeta elev_meta_{};
     bool has_esdf_ = false;

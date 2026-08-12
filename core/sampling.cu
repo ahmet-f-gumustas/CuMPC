@@ -38,17 +38,17 @@ __global__ void sample_controls_kernel(
     rng[k] = st;
 }
 
-void init_rng(curandState* rng, unsigned long long seed, int K)
+void init_rng(curandState* rng, unsigned long long seed, int K, cudaStream_t stream)
 {
     const int grid = (K + kBlock - 1) / kBlock;
-    init_rng_kernel<<<grid, kBlock>>>(rng, seed, K);
+    init_rng_kernel<<<grid, kBlock, 0, stream>>>(rng, seed, K);
 }
 
 void sample_controls(const float* U_nom, float* U, curandState* rng,
                      float sigma_v, float sigma_omega,
-                     float v_max, float omega_max, int K, int H)
+                     float v_max, float omega_max, int K, int H, cudaStream_t stream)
 {
     const int grid = (K + kBlock - 1) / kBlock;
-    sample_controls_kernel<<<grid, kBlock>>>(U_nom, U, rng, sigma_v, sigma_omega,
+    sample_controls_kernel<<<grid, kBlock, 0, stream>>>(U_nom, U, rng, sigma_v, sigma_omega,
                                              v_max, omega_max, K, H);
 }
