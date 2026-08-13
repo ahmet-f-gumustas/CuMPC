@@ -19,6 +19,11 @@ struct MPPIConfig {
 
 // MPPI orkestrasyonu: sample → rollout → min → weights → update → warm-start.
 // Tüm device belleği RAII (DeviceBuffer); harness yalnızca step() çağırır.
+// Bir config yayınının kimliği. Çağıran runtime, uyguladığı epoch ile planner'ın GERÇEKTEN okuduğu
+// epoch'u karşılaştırabilsin diye monoton artar; eşit değillerse geçiş uygulanmamıştır ve bunu
+// varsaymak yerine görmek gerekir.
+using ConfigEpoch = unsigned long long;
+
 class MPPI {
 public:
     explicit MPPI(const MPPIConfig& cfg);
@@ -56,12 +61,38 @@ public:
     // tamamlanana kadar geçerli kalmalıdır.
     void set_cost_grid_device(const float* device, MapMeta meta);
     void set_elevation(const float* host, MapMeta meta);
-    void set_slip(const SlipParams& slip) { cfg_.slip = slip; }
+    void set_slip(const SlipParams& slip) { active_().slip = slip; }
+
+    // ---- İKİ TAMPONLU IMMUTABLE CONFIG (BudgetRT §18.3'ün adapter'dan istediği şey) --------
+    //
+    // Aktif config, bir tick koşarken DEĞİŞTİRİLEMEZ. Değişiklik iki adımdır ve ikisi ayrı yerde
+    // durur:
+    //
+    //   prepare(cfg) — doğrular ve PASİF slot'a hazırlar. Pahalı iş (K/H büyüdüyse tampon
+    //                  büyütmesi) burada, yani tick yolunun DIŞINDA yapılır. Aktif config'e
+    //                  dokunmaz; başarısız olursa hiçbir şey değişmemiştir.
+    //   commit()     — slot'u takas eder ve epoch'u artırır. CUDA çağrısı yoktur; bu yüzden bir
+    //                  frame sınırında yapılabilir. Uçuşta iş varken REDDEDİLİR.
+    //
+    // K ve H'nin sınıf (ii) olmasının sebebi tam olarak budur: değişmeleri yeniden ayırma
+    // gerektirir, o da prepare()'e aittir. Sınıf (i) yapmak (kapasite-maksimum tahsis) ayrı bir
+    // karardır ve bilerek ertelenmiştir.
+    [[nodiscard]] bool prepare(const MPPIConfig& cfg);
+    [[nodiscard]] bool has_prepared() const { return has_prepared_; }
+    void abort_prepared() { has_prepared_ = false; }
+    // Takas edilen epoch'u döner; reddedilirse aktif epoch'u değiştirmeden döner.
+    ConfigEpoch commit();
+
+    ConfigEpoch active_epoch() const { return epoch_; }
+    // SON enqueue()'nun gerçekten okuduğu epoch. commit() sonrası bir tick koşmadan bu değer
+    // değişmez - "yayınlandı" ile "uygulandı" iki ayrı olgudur ve karıştırılmaları, hiç uygulanmamış
+    // bir geçişin uygulanmış sayılmasıdır.
+    ConfigEpoch observed_epoch() const { return observed_epoch_; }
     void reset();  // warm-start + rng + u_prev sıfırla (tam determinizm)
 
     void nominal(float* out_h2) const;        // [H*2]
     void last_rollouts(float* out_kh3) const; // [K*H*3]
-    const MPPIConfig& config() const { return cfg_; }
+    const MPPIConfig& config() const { return active_(); }
     MapView esdf_view() const;
     MapView elev_view() const;
 
@@ -72,7 +103,16 @@ public:
 private:
     void submit_(float3 x0, const float* ref_host, int N);
 
-    MPPIConfig cfg_;
+    MPPIConfig& active_() { return cfg_[active_slot_]; }
+    const MPPIConfig& active_() const { return cfg_[active_slot_]; }
+    [[nodiscard]] bool grow_for_(const MPPIConfig& cfg);
+
+    // İKİ SLOT. Aktif olan okunur, diğeri hazırlanır; commit yalnız indeksi çevirir.
+    MPPIConfig cfg_[2];
+    int active_slot_ = 0;
+    bool has_prepared_ = false;
+    ConfigEpoch epoch_ = 1;
+    ConfigEpoch observed_epoch_ = 0;
 
     // NON-BLOCKING olarak yaratılır: legacy default stream ile ÖRTÜK senkronizasyon kurmaz. Bu,
     // çağıran runtime'ın kanal ayrımının (BudgetRT §6.3 k4) planner tarafından bozulmamasının tek
