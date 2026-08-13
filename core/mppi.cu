@@ -8,10 +8,12 @@
 #include "core/rollout.cuh"
 #include "core/sampling.cuh"
 
-MPPI::MPPI(const MPPIConfig& cfg) : cfg_(cfg)
+MPPI::MPPI(const MPPIConfig& cfg)
 {
-    if (cfg_.K <= 0 || cfg_.H <= 1) throw std::invalid_argument("MPPIConfig: K > 0, H > 1 gerekli");
-    const int K = cfg_.K, H = cfg_.H;
+    cfg_[0] = cfg;
+    cfg_[1] = cfg;
+    if (active_().K <= 0 || active_().H <= 1) throw std::invalid_argument("MPPIConfig: K > 0, H > 1 gerekli");
+    const int K = active_().K, H = active_().H;
     U_.reset((size_t)K * H * 2);
     U_nom_.reset((size_t)H * 2);
     shift_.reset((size_t)H * 2);
@@ -44,6 +46,68 @@ MPPI::~MPPI()
     if (stream_) cudaStreamDestroy(stream_);
 }
 
+// Tamponları `cfg`'nin gerektirdiği boyuta BÜYÜTÜR. Kapasite-maksimum modeli sayesinde bu tek
+// yönlüdür: küçültme yok, dolayısıyla eski aktif config hâlâ geçerli kalır ve prepare() başarısız
+// olsa bile ağaç tutarlıdır.
+bool MPPI::grow_for_(const MPPIConfig& cfg)
+{
+    if (cfg.K <= 0 || cfg.H <= 1) return false;
+    const int K = cfg.K, H = cfg.H;
+    U_.reserve((size_t)K * H * 2);
+    U_nom_.reserve((size_t)H * 2);
+    shift_.reserve((size_t)H * 2);
+    S_.reserve(K);
+    traj_.reserve((size_t)K * H * 3);
+    wgt_.reserve(K);
+    eta_partial_.reserve(reduction_num_blocks(K));
+    rng_.reserve((size_t)K * sizeof(curandState));
+    return true;
+}
+
+bool MPPI::prepare(const MPPIConfig& cfg)
+{
+    // İKİ RET, ve ikisi ayrı: hazırlanmış ama commit edilmemiş bir config varken ikincisini
+    // hazırlamak, hangisinin yayınlanacağını belirsiz bırakır. Reddedilir; çağıran ya commit eder
+    // ya abort eder.
+    if (has_prepared_) return false;
+    if (!grow_for_(cfg)) return false;
+    cfg_[1 - active_slot_] = cfg;
+    has_prepared_ = true;
+    return true;
+}
+
+ConfigEpoch MPPI::commit()
+{
+    if (!has_prepared_) return epoch_;
+    // FRAME SINIRI. Uçuşta iş varken takas etmek, yarısı eski yarısı yeni config'le koşan bir tick
+    // üretir - INV-06'nın yasakladığı partial config'in tam tanımı. Reddedilir.
+    if (!poll()) return epoch_;
+
+    const MPPIConfig& incoming = cfg_[1 - active_slot_];
+    const bool shape_changed = incoming.K != active_().K || incoming.H != active_().H;
+
+    active_slot_ = 1 - active_slot_;
+    has_prepared_ = false;
+    ++epoch_;
+
+    // K veya H değiştiyse aktif uzunluklar ve RNG durumu yeni şekle göre kurulmalıdır. Bu, sınıf
+    // (ii)'nin "prepare() içinde re-init" ifadesinin ta kendisi.
+    if (shape_changed) {
+        const int K = active_().K, H = active_().H;
+        U_.resize((size_t)K * H * 2);
+        U_nom_.resize((size_t)H * 2);
+        shift_.resize((size_t)H * 2);
+        S_.resize(K);
+        traj_.resize((size_t)K * H * 3);
+        wgt_.resize(K);
+        eta_partial_.resize(reduction_num_blocks(K));
+        rng_.resize((size_t)K * sizeof(curandState));
+        ref_cap_ = ref_cap_;  // referans penceresi K/H'den bağımsızdır
+        reset();
+    }
+    return epoch_;
+}
+
 void MPPI::reset()
 {
     // Ölçüldü: eski hâlde bir reset'in %97.5'i (106.6 µs'in 104.0 µs'i) buradaki
@@ -52,7 +116,7 @@ void MPPI::reset()
     // init_rng bu stream'e girer ve ondan sonraki her iş arkasında sıralanır. Beklemeye gerek yok.
     U_nom_.zero_async(stream_);
     u_prev_ = {0.0f, 0.0f};
-    init_rng(reinterpret_cast<curandState*>(rng_.get()), cfg_.seed, cfg_.K, stream_);
+    init_rng(reinterpret_cast<curandState*>(rng_.get()), active_().seed, active_().K, stream_);
     CUDA_CHECK(cudaGetLastError());
 }
 
@@ -137,7 +201,10 @@ float2 MPPI::step(float3 x0, const float* ref_host, int N)
 void MPPI::submit_(float3 x0, const float* ref_host, int N)
 {
     if (N < 2) throw std::invalid_argument("reference window: N >= 2 gerekli");
-    const int K = cfg_.K, H = cfg_.H;
+    // Bu tick'in okuduğu epoch, tick BAŞLARKEN sabitlenir. Çağıran bunu kendi uyguladığı epoch ile
+    // karşılaştırır; eşit değilse geçiş bu tick'e HENÜZ ulaşmamıştır.
+    observed_epoch_ = epoch_;
+    const int K = active_().K, H = active_().H;
 
     // reference window H2D
     if (N > ref_cap_) {
@@ -149,19 +216,19 @@ void MPPI::submit_(float3 x0, const float* ref_host, int N)
 
     // 1) SAMPLE: U = U_nom + eps, clamp
     sample_controls(U_nom_.get(), U_.get(), reinterpret_cast<curandState*>(rng_.get()),
-                    cfg_.sigma_v, cfg_.sigma_omega,
-                    cfg_.robot.v_max, cfg_.robot.omega_max, K, H, stream_);
+                    active_().sigma_v, active_().sigma_omega,
+                    active_().robot.v_max, active_().robot.omega_max, K, H, stream_);
 
     // 2) ROLLOUT: S[k] = Σ_t step_cost
     rollout_cost(U_.get(), x0, u_prev_, S_.get(), traj_.get(),
-                 cfg_.robot, cfg_.slip, cfg_.weights, cfg_.cost,
-                 ref, esdf_view(), elev_view(), cfg_.dt, K, H, stream_);
+                 active_().robot, active_().slip, active_().weights, active_().cost,
+                 ref, esdf_view(), elev_view(), active_().dt, K, H, stream_);
 
     // 3) BASELINE: rho = min_k S[k]
     reduce_min(S_.get(), rho_.get(), K, stream_);
 
     // 4) WEIGHTS: wgt = exp(-(1/λ)(S-ρ)), eta = Σ wgt
-    compute_weights(S_.get(), rho_.get(), cfg_.lambda,
+    compute_weights(S_.get(), rho_.get(), active_().lambda,
                     wgt_.get(), eta_partial_.get(), eta_.get(), K, stream_);
 
     // 5) UPDATE: U_nom = (1/eta) Σ_k wgt[k]·U[k,·]
@@ -193,10 +260,10 @@ void MPPI::submit_(float3 x0, const float* ref_host, int N)
 
 void MPPI::nominal(float* out_h2) const
 {
-    U_nom_.download(out_h2, (size_t)cfg_.H * 2);
+    U_nom_.download(out_h2, (size_t)active_().H * 2);
 }
 
 void MPPI::last_rollouts(float* out_kh3) const
 {
-    traj_.download(out_kh3, (size_t)cfg_.K * cfg_.H * 3);
+    traj_.download(out_kh3, (size_t)active_().K * active_().H * 3);
 }

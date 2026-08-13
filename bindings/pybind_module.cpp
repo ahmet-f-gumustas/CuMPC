@@ -41,6 +41,15 @@ class MPPIController {
 public:
     explicit MPPIController(const MPPIConfig& cfg) : core_(cfg) {}
 
+    // Two-slot immutable config, forwarded verbatim: the rules live in the core, and a binding that
+    // re-implemented any of them would be a second, divergent answer to the same question.
+    bool prepare(const MPPIConfig& cfg) { return core_.prepare(cfg); }
+    ConfigEpoch commit() { return core_.commit(); }
+    void abort_prepared() { core_.abort_prepared(); }
+    bool has_prepared() const { return core_.has_prepared(); }
+    ConfigEpoch active_epoch() const { return core_.active_epoch(); }
+    ConfigEpoch observed_epoch() const { return core_.observed_epoch(); }
+
     // x: (3,) [px,py,theta]; ref: (N,3) [x,y,heading] → (2,) [v,omega]
     farray step(farray x, farray ref)
     {
@@ -113,6 +122,12 @@ private:
         const int out_dim = terrain ? 3 : 1;
         DeviceBuffer<float> d_pts((size_t)M * 2), d_out((size_t)M * out_dim);
         d_pts.upload(pts.data(), (size_t)M * 2);
+        // THE MAP UPLOAD IS ASYNCHRONOUS AND LIVES ON THE CONTROLLER'S OWN STREAM. This query runs on
+        // the default stream, so without this wait it can read the map BEFORE set_esdf()'s copy has
+        // landed - which is exactly what three of this repository's own query tests caught the first
+        // time the uploads became async. A debug/inspection path may block; the tick path may not,
+        // and that asymmetry is the whole reason this wait is HERE rather than inside set_esdf().
+        CUDA_CHECK(cudaStreamSynchronize(core_.stream()));
         if (terrain) {
             if (!core_.elev_view().data) throw std::runtime_error("elevation map set edilmedi");
             debug_query_terrain(core_.elev_view(), d_pts.get(), d_out.get(), M);
@@ -255,6 +270,16 @@ PYBIND11_MODULE(cumpc_core, m)
         .def("last_rollouts", &MPPIController::last_rollouts)
         .def("nominal", &MPPIController::nominal)
         .def("reset", &MPPIController::reset)
+        // Two-slot immutable config. `prepare` stages and does the expensive work off the tick
+        // path; `commit` swaps at a frame boundary and is refused while work is in flight.
+        .def("prepare", &MPPIController::prepare, py::arg("cfg"))
+        .def("commit", &MPPIController::commit)
+        .def("abort_prepared", &MPPIController::abort_prepared)
+        .def("has_prepared", &MPPIController::has_prepared)
+        .def("active_epoch", &MPPIController::active_epoch)
+        // The epoch the LAST step actually read. "published" and "applied" are two different
+        // facts, and conflating them means an unapplied transition counts as applied.
+        .def("observed_epoch", &MPPIController::observed_epoch)
         .def("query_esdf", &MPPIController::query_esdf, py::arg("points"))
         .def("query_terrain", &MPPIController::query_terrain, py::arg("points"));
 
