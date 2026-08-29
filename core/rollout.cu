@@ -67,14 +67,33 @@ float step_cost(float px, float py, float theta,
     c += accel_pen(dv / dt, rp.a_max, cp.k_accel);
     c += accel_pen(dw / dt, rp.alpha_max, cp.k_accel);
 
-    // 6) obstacle — ESDF query (PRODUCTION-IDENTICAL); map yoksa terim devre dışı
+    // 6) obstacle — harita sorgusu; map yoksa terim devre dışı.
+    //
+    // İKİ ANLAM, TEK TERİM. Hücrenin ne olduğunu haritanın kendisi söyler (MapSemantics); burada
+    // tahmin edilmez. ADR-014 Ç3 planner'ın normalize maliyet uzayında planlamasına karar verdi ve
+    // BudgetRT v1'de yalnız onu besler; SDF yolu upstream'de KALIR çünkü bu deponun kendi
+    // testleri ve diğer tüketicileri onu kullanır (Ç3: "upstream'de kalır ama BudgetRT onu
+    // beslemez").
     if (esdf.valid()) {
-        const float d = esdf.query(px, py);  // signed distance, engele [m]
-        const float d_clear = d - rp.robot_radius;
-        if (d_clear < cp.safe_hard) c += w.w_coll_hard;  // hard barrier
-        if (d_clear < cp.safe_soft) {
-            const float m = cp.safe_soft - d_clear;
-            c += w.w_coll_soft * m * m;                  // soft margin
+        if (esdf.semantics == MAP_NORMALIZED_COST) {
+            // §13.2'nin çıktısı: u ∈ [0,1], 1 = geçilemez. Mesafe yok, dolayısıyla robot yarıçapı
+            // burada bir clearance'tan ÇIKARILAMAZ — footprint şişirmesi bu sürümde yapılmaz ve
+            // bu bir GAP'tir: rollout noktası tek hücre örnekler. §13 de bir şişirme bileşeni
+            // tanımlamıyor; icat etmek K-FAIL-CLOSED'un tersi olurdu.
+            const float u = fminf(fmaxf(esdf.query(px, py), 0.0f), 1.0f);
+            const bool lethal_threshold_declared = cp.cost_lethal > 0.0f && cp.cost_lethal <= 1.0f;
+            if (lethal_threshold_declared && u >= cp.cost_lethal) c += w.w_coll_hard;
+            // Dereceli terim: KARESİ alınır, tıpkı SDF dalındaki soft margin gibi — ucuz hücreler
+            // arasındaki farkı küçük, pahalıya yaklaşmayı hızla pahalı yapar.
+            c += w.w_coll_soft * u * u;
+        } else {
+            const float d = esdf.query(px, py);  // signed distance, engele [m]
+            const float d_clear = d - rp.robot_radius;
+            if (d_clear < cp.safe_hard) c += w.w_coll_hard;  // hard barrier
+            if (d_clear < cp.safe_soft) {
+                const float m = cp.safe_soft - d_clear;
+                c += w.w_coll_soft * m * m;                  // soft margin
+            }
         }
     }
 

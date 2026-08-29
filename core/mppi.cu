@@ -130,6 +130,7 @@ void MPPI::set_esdf(const float* host, MapMeta meta)
     esdf_meta_ = meta;
     has_esdf_ = true;
     esdf_external_ = nullptr;
+    esdf_semantics_ = MAP_SIGNED_DISTANCE_M;
 }
 
 void MPPI::set_cost_grid_device(const float* device, MapMeta meta)
@@ -139,6 +140,21 @@ void MPPI::set_cost_grid_device(const float* device, MapMeta meta)
     esdf_external_ = device;
     esdf_meta_ = meta;
     has_esdf_ = (device != nullptr);
+    // K9(b)'nin İKİNCİ YARISI. Cihaz işaretçisini teslim almak taşıma yarısıydı; bu, anlam
+    // yarısı. Ç3 kararı BudgetRT'nin ürettiği şeyin normalize maliyet olduğunu söylüyor ve bu
+    // giriş noktası yalnız onun içindir — SDF isteyen set_esdf() çağırır.
+    esdf_semantics_ = MAP_NORMALIZED_COST;
+}
+
+void MPPI::set_cost_grid(const float* host, MapMeta meta)
+{
+    const size_t cells = (size_t)meta.nx * meta.ny;
+    esdf_data_.resize(cells);
+    esdf_data_.upload_async(host, cells, stream_);
+    esdf_meta_ = meta;
+    has_esdf_ = true;
+    esdf_external_ = nullptr;
+    esdf_semantics_ = MAP_NORMALIZED_COST;
 }
 
 void MPPI::set_elevation(const float* host, MapMeta meta)
@@ -154,13 +170,16 @@ MapView MPPI::esdf_view() const
 {
     // Dışarıdan verilen cihaz işaretçisi varsa O kullanılır: K9(b)'nin bütün noktası, gridin bu
     // sınıfın kendi tamponuna kopyalanmadan tüketilmesidir.
-    if (!has_esdf_) return {nullptr, esdf_meta_};
-    return {esdf_external_ != nullptr ? esdf_external_ : esdf_data_.get(), esdf_meta_};
+    if (!has_esdf_) return {nullptr, esdf_meta_, esdf_semantics_};
+    return {esdf_external_ != nullptr ? esdf_external_ : esdf_data_.get(), esdf_meta_,
+            esdf_semantics_};
 }
 
 MapView MPPI::elev_view() const
 {
-    return {has_elev_ ? elev_data_.get() : nullptr, elev_meta_};
+    // Elevation üç kanallı bir terrain haritasıdır; ne SDF ne maliyet, ve query_terrain() ile
+    // okunur. Anlam alanı onun için taşınmaz.
+    return {has_elev_ ? elev_data_.get() : nullptr, elev_meta_, MAP_SIGNED_DISTANCE_M};
 }
 
 void MPPI::enqueue(float3 x0, const float* ref_host, int N)
