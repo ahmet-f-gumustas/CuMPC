@@ -39,6 +39,14 @@ struct CostParams {
     float term_slack;      // [m] terminal cost deadband: on-pace rollout'lar
                            // sıfır terminal baskısı görür (hız dengesini bozmaz),
                            // duran/yavaş rollout'lar tam baskıyı yer (anti-deadlock)
+    // MAP_NORMALIZED_COST haritalar için: bu değerin ÜSTÜNDEKİ hücre ölümcül sayılır ve
+    // w_coll_hard yer. safe_hard/safe_soft metre cinsindendir ve normalize bir maliyete
+    // uygulanamaz; bu eşik onların maliyet uzayındaki karşılığıdır.
+    //
+    // ARALIK DIŞI = ÖLÜMCÜL EŞİK YOK. (0, 1] dışında bir değer -- sıfır dahil, yani bu alanı hiç
+    // doldurmamış bir çağıran -- hard barrier'ı KAPATIR. Sıfırın "her hücre ölümcül" anlamına
+    // gelmesi, alanı bilmeyen eski bir çağıranı sessizce felç ederdi; graded terim yine çalışır.
+    float cost_lethal;
 };
 
 struct RefPoint {

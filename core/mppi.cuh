@@ -54,12 +54,27 @@ public:
     // result(): son tamamlanan enqueue'nun kontrolü. poll() true dönmeden okunması tanımsızdır.
     float2 result() const;
 
+    // Hücreleri METRE cinsinden signed distance olarak yorumlanan bir harita yükler. v1'de
+    // BudgetRT bu yolu beslemez (ADR-014 Ç3); depo içi tüketiciler ve testler için durur.
     void set_esdf(const float* host, MapMeta meta);
-    // K9(b): maliyet gridi ZATEN CİHAZDA olduğunda kopyalamadan benimser. BudgetRT'nin overlay'i
-    // çıktısını cihazda üretir; onu host'a indirip geri yüklemek ölçülen ~208 µs/tick'lik senkron
-    // H2D'nin tamamıdır. `device` işaretçisinin sahibi ÇAĞIRANDIR ve en az bir sonraki enqueue()
-    // tamamlanana kadar geçerli kalmalıdır.
+    // K9(b): NORMALİZE [0,1] maliyet gridi ZATEN CİHAZDA olduğunda kopyalamadan benimser.
+    // BudgetRT'nin overlay'i çıktısını cihazda üretir; onu host'a indirip geri yüklemek ölçülen
+    // ~208 µs/tick'lik senkron H2D'nin tamamıdır. `device` işaretçisinin sahibi ÇAĞIRANDIR ve en az
+    // bir sonraki enqueue() tamamlanana kadar geçerli kalmalıdır.
+    //
+    // ANLAM DA BURADA DEĞİŞİR, yalnız taşıma değil: bu giriş noktasıyla verilen harita
+    // MAP_NORMALIZED_COST olarak işaretlenir ve rollout maliyeti onu `[0,1]` bir maliyet olarak
+    // okur (rollout.cu'daki 6. terim). Ölümcül eşik CostParams::cost_lethal'dir; metre cinsinden
+    // safe_hard/safe_soft bu dalda KULLANILMAZ. Taşıma yarısı PR #1'de yapılmıştı; anlam yarısı
+    // atlanmıştı ve bir `[0,1]` maliyeti mesafe olarak okumak, cezayı HER hücrede tetiklediği ve
+    // her rollout'a uygulanan sabit softmax'ta sadeleştiği için çıktıda görünmüyordu.
     void set_cost_grid_device(const float* device, MapMeta meta);
+    // set_cost_grid_device()'in HOST tarafı: aynı anlambilim, ama gridi bu sınıfın kendi tamponuna
+    // yükler. BudgetRT bunu KULLANMAZ — onun gridi zaten cihazdadır ve kopyalamamak K9(b)'nin bütün
+    // noktasıdır. Burada olmasının nedeni, yeni anlambilimin bu deponun kendi testlerinden
+    // sürülebilmesidir: bir cihaz işaretçisi Python'dan üretilemez, ve sınanamayan bir dal
+    // sınanmamış bir daldır.
+    void set_cost_grid(const float* host, MapMeta meta);
     void set_elevation(const float* host, MapMeta meta);
     void set_slip(const SlipParams& slip) { active_().slip = slip; }
 
@@ -144,6 +159,9 @@ private:
     MapMeta esdf_meta_{};
     MapMeta elev_meta_{};
     bool has_esdf_ = false;
+    // Haritanın hücrelerinin anlamı; set_esdf() ve set_cost_grid_device() onu belirler ve
+    // esdf_view() kernel'e taşır. Bkz. perception/map_view.cuh.
+    MapSemantics esdf_semantics_ = MAP_SIGNED_DISTANCE_M;
     bool has_elev_ = false;
 
     int ref_cap_ = 0;

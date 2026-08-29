@@ -72,6 +72,13 @@ public:
         core_.set_esdf(grid.data(), make_meta(ox, oy, res, nx, ny));
     }
 
+    void set_cost_grid(farray grid, float ox, float oy, float res)
+    {
+        if (grid.ndim() != 2) throw std::invalid_argument("cost grid: (ny,nx) bekleniyor");
+        const int ny = (int)grid.shape(0), nx = (int)grid.shape(1);
+        core_.set_cost_grid(grid.data(), make_meta(ox, oy, res, nx, ny));
+    }
+
     void set_elevation(farray grid, float ox, float oy, float res)
     {
         if (grid.ndim() != 3 || grid.shape(2) != 3)
@@ -241,7 +248,10 @@ PYBIND11_MODULE(cumpc_core, m)
         .def_readwrite("safe_hard", &CostParams::safe_hard)
         .def_readwrite("safe_soft", &CostParams::safe_soft)
         .def_readwrite("rollover_slope", &CostParams::rollover_slope)
-        .def_readwrite("term_slack", &CostParams::term_slack);
+        .def_readwrite("term_slack", &CostParams::term_slack)
+        // MAP_NORMALIZED_COST haritalar icin olumcul esik; (0,1] disinda bir deger hard
+        // barrier'i kapatir. Bkz. core/types.cuh.
+        .def_readwrite("cost_lethal", &CostParams::cost_lethal);
 
     py::class_<MPPIConfig>(m, "MPPIConfig")
         .def(py::init<>())
@@ -262,6 +272,8 @@ PYBIND11_MODULE(cumpc_core, m)
         .def(py::init<const MPPIConfig&>())
         .def("step", &MPPIController::step, py::arg("x"), py::arg("ref"))
         .def("set_esdf", &MPPIController::set_esdf,
+             py::arg("grid"), py::arg("origin_x"), py::arg("origin_y"), py::arg("res"))
+        .def("set_cost_grid", &MPPIController::set_cost_grid,
              py::arg("grid"), py::arg("origin_x"), py::arg("origin_y"), py::arg("res"))
         .def("set_elevation", &MPPIController::set_elevation,
              py::arg("grid"), py::arg("origin_x"), py::arg("origin_y"), py::arg("res"))

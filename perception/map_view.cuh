@@ -7,6 +7,18 @@ struct MapMeta {
     int nx, ny;
 };
 
+// Bir haritanın hücrelerinin NE ANLAMA GELDİĞİ. ADR-014 Ç3 (2026-08-12) planner'ın normalize
+// `[0,1]` maliyet uzayında planlayacağına karar verdi; K9(b) o kararın uygulaması. Ama bir cihaz
+// işaretçisini teslim etmek anlamı değiştirmez: rollout maliyeti hücreyi METRE cinsinden bir signed
+// distance olarak okuyorsa, `[0,1]` bir maliyet ona "her yerde bir metreden az açıklık" gibi
+// görünür — ve her rollout'a uygulanan bir ceza softmax'ta sadeleştiği için bu uyuşmazlık ÇIKTIDA
+// GÖRÜNMEZ. Bu yüzden anlam haritanın kendisiyle birlikte taşınır ve kernel ona göre dallanır;
+// çağıranın doğru olanı beslediğine güvenilmez.
+enum MapSemantics : int {
+    MAP_SIGNED_DISTANCE_M = 0,  // hücre = engele signed distance [m] (v1'de BudgetRT beslemez)
+    MAP_NORMALIZED_COST = 1,    // hücre = [0,1] maliyet (§13.2: C_i = max(G_i, clamp(S_i,0,1)))
+};
+
 struct TerrainCell {
     float slope;           // [rad]
     float roughness;       // lokal yükseklik std [m]
@@ -16,8 +28,12 @@ struct TerrainCell {
 // Device-side read-only harita görünümü. Query PRODUCTION-IDENTICAL:
 // build basitleşse/değişse de bu fonksiyonlar production cuMPC ile birebir aynıdır.
 struct MapView {
-    const float* data;  // ESDF: [ny*nx] signed dist; elevation: [ny*nx*3] (slope,rough,trav)
+    const float* data;  // ESDF/maliyet: [ny*nx]; elevation: [ny*nx*3] (slope,rough,trav)
     MapMeta m;
+    // VARSAYILAN SDF'DİR ve bu bilinçli: bu alan eklenmeden önce yazılmış her çağrı yeri metre
+    // cinsinden mesafe besliyordu, ve sessizce maliyet varsaymak onların hepsini bozardı. Yeni
+    // anlamı isteyen onu AÇIKÇA söyler.
+    MapSemantics semantics = MAP_SIGNED_DISTANCE_M;
 
 // device query gövdeleri yalnız CUDA TU'larında derlenir; host-only TU'lar
 // (pybind) sadece struct layout'unu görür — layout her iki tarafta aynıdır.
